@@ -109,6 +109,7 @@ function App() {
             intensity={blinkIntensity} 
             size={blobSize} 
             lang={speechLang} 
+            autoListen={autoListen}
             onNewMessage={handleNewMessage}
           />
         </div>

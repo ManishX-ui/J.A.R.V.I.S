@@ -47,7 +47,7 @@ const getColorTheme = (colorName) => {
   }
 }
 
-const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, lang = 'en-US', onNewMessage }, ref) => {
+const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, lang = 'en-US', autoListen = true, onNewMessage }, ref) => {
   const [active, setActive] = useState(false)
   const [listening, setListening] = useState(false)
   const [isAwake, setIsAwake] = useState(true) // Starts awake on activate
@@ -87,6 +87,18 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
     langRef.current = lang
   }, [color, intensity, size, lang])
 
+  const autoListenRef = useRef(autoListen)
+  useEffect(() => {
+    autoListenRef.current = autoListen
+    if (autoListen) {
+      setIsAwake(true)
+      if (inactivityTimeoutRef.current) {
+        clearTimeout(inactivityTimeoutRef.current)
+        inactivityTimeoutRef.current = null
+      }
+    }
+  }, [autoListen])
+
   useImperativeHandle(ref, () => ({
     sendTextMessage: async (text) => {
       // Auto-activate system if not activated
@@ -113,10 +125,15 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
     if (inactivityTimeoutRef.current) {
       clearTimeout(inactivityTimeoutRef.current)
     }
-    inactivityTimeoutRef.current = setTimeout(() => {
-      setIsAwake(false)
-      inactivityTimeoutRef.current = null
-    }, 8000) // 8 seconds of inactivity
+    // Only go to standby after 8 seconds of silence if autoListen is false
+    if (!autoListenRef.current) {
+      inactivityTimeoutRef.current = setTimeout(() => {
+        setIsAwake(false)
+        inactivityTimeoutRef.current = null
+      }, 8000)
+    } else {
+      setIsAwake(true)
+    }
   }
 
   // HANDLE SPEECH THROUGH STATE MACHINE
@@ -125,10 +142,12 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
 
     if (onNewMessage) onNewMessage('user', message)
 
-    if (isAwakeRef.current) {
-      resetInactivityTimer()
-      
-      const foundWake = wakeWords.find(word => message.toLowerCase().includes(word))
+    resetInactivityTimer()
+
+    const foundWake = wakeWords.find(word => message.toLowerCase().includes(word))
+
+    if (autoListenRef.current || isAwakeRef.current || foundWake) {
+      setIsAwake(true)
       if (foundWake) {
         const index = message.toLowerCase().indexOf(foundWake)
         const command = message.substring(index + foundWake.length).trim()
@@ -147,26 +166,7 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
         takeCommand(message)
       }
     } else {
-      const foundWake = wakeWords.find(word => message.toLowerCase().includes(word))
-      if (foundWake) {
-        setIsAwake(true)
-        resetInactivityTimer()
-
-        const index = message.toLowerCase().indexOf(foundWake)
-        const command = message.substring(index + foundWake.length).trim()
-
-        if (command) {
-          setJarvisResponse("")
-          setCurrentSpeech(message)
-          takeCommand(command)
-        } else {
-          setJarvisResponse("")
-          setCurrentSpeech(message)
-          respond(isHindi ? "जी बोलिए, मैं सुन रहा हूँ।" : "Yes, I am listening.")
-        }
-      } else {
-        console.log("Ignored speech (no wake word found):", message)
-      }
+      console.log("Ignored speech (no wake word found and standby active):", message)
     }
   }
 
@@ -835,9 +835,11 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
       <p style={styles.status}>
         {!active 
           ? "SYSTEM STANDBY" 
-          : isAwake
-            ? (lang.startsWith('hi') ? "ऑनलाइन - जार्विस सुन रहा है" : "ONLINE - LISTENING FOR COMMAND")
-            : (lang.startsWith('hi') ? "स्टैंडबाय - 'हेलो जार्विस' बोलें" : "STANDBY - SAY 'HELLO JARVIS' TO WAKE UP")}
+          : !listening 
+            ? (lang.startsWith('hi') ? "ऑफलाइन - माइक बंद है" : "OFFLINE - MICROPHONE INACTIVE")
+            : isAwake
+              ? (lang.startsWith('hi') ? "ऑनलाइन - जार्विस सुन रहा है" : "ONLINE - LISTENING FOR COMMAND")
+              : (lang.startsWith('hi') ? "स्टैंडबाय - 'हेलो जार्विस' बोलें" : "STANDBY - SAY 'HELLO JARVIS' TO WAKE UP")}
       </p>
 
       {micError && (
