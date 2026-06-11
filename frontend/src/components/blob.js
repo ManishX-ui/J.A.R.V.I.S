@@ -278,7 +278,7 @@ export default function JarvisBlob({ color = 'cyan', intensity = 1.5, size = 105
     await callGroqLLM(message)
   }
 
-  // CALL GROQ LLM API (STREAMING)
+  // CALL GROQ LLM API VIA BACKEND PROXY (RESOLVES CORS)
   const callGroqLLM = async (prompt) => {
     const activeLang = langRef.current
     const isHindi = activeLang.startsWith('hi')
@@ -297,14 +297,13 @@ export default function JarvisBlob({ color = 'cyan', intensity = 1.5, size = 105
     setJarvisResponse(isHindi ? "सिस्टम प्रतिक्रिया लोड हो रही है..." : "Synchronizing synaptic response...")
 
     try {
-      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      const response = await fetch("http://localhost:5000/api/chat", {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`
+          "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "llama-3.1-8b-instant",
+          apiKey: apiKey,
           messages: [
             {
               role: "system",
@@ -316,69 +315,19 @@ export default function JarvisBlob({ color = 'cyan', intensity = 1.5, size = 105
               role: "user",
               content: prompt
             }
-          ],
-          stream: true
+          ]
         })
       })
 
       if (!response.ok) {
-        throw new Error(`Groq HTTP Error: ${response.status}`)
+        const errJson = await response.json().catch(() => ({}))
+        throw new Error(errJson.error || `HTTP error! status: ${response.status}`)
       }
 
-      // Clear loading indicator
-      setJarvisResponse("")
-
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder("utf-8")
-      let done = false
-      let fullText = ""
-      let buffer = ""
-
-      while (!done) {
-        const { value, done: readerDone } = await reader.read()
-        done = readerDone
-        if (value) {
-          buffer += decoder.decode(value, { stream: !done })
-          const lines = buffer.split("\n")
-          buffer = lines.pop() || ""
-
-          for (const line of lines) {
-            const cleanLine = line.trim()
-            if (cleanLine.startsWith("data: ")) {
-              const dataStr = cleanLine.slice(6).trim()
-              if (dataStr === "[DONE]") {
-                break
-              }
-              try {
-                const parsed = JSON.parse(dataStr)
-                const content = parsed.choices[0]?.delta?.content || ""
-                fullText += content
-                setJarvisResponse(fullText)
-              } catch (e) {
-                // Incomplete JSON
-              }
-            }
-          }
-        }
-      }
-
-      // Process any remaining buffer
-      if (buffer.trim()) {
-        const cleanLine = buffer.trim()
-        if (cleanLine.startsWith("data: ")) {
-          const dataStr = cleanLine.slice(6).trim()
-          if (dataStr !== "[DONE]") {
-            try {
-              const parsed = JSON.parse(dataStr)
-              const content = parsed.choices[0]?.delta?.content || ""
-              fullText += content
-              setJarvisResponse(fullText)
-            } catch (e) {
-              // ignore
-            }
-          }
-        }
-      }
+      const data = await response.json()
+      const fullText = data.choices[0]?.message?.content || ""
+      
+      setJarvisResponse(fullText)
 
       // Voice synthesis
       if (fullText) {
