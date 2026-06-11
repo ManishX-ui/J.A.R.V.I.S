@@ -1,0 +1,190 @@
+.nabbar-container {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 90%;
+  max-width: 1000px;
+  height: 72px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 32px;
+  border-radius: 36px;
+  background: rgba(10, 15, 26, 0.4);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 
+    0 15px 35px rgba(0, 0, 0, 0.5),
+    inset 0 0 15px rgba(255, 255, 255, 0.05),
+    0 0 25px rgba(0, 245, 255, 0.05);
+  z-index: 1000;
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  font-family: 'Rajdhani', sans-serif;
+  box-sizing: border-box;
+}
+
+/* Futuristic Brand Logo */
+.nabbar-brand {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.nabbar-brand-text {
+  font-family: 'Orbitron', sans-serif;
+  font-weight: 900;
+  font-size: 20px;
+  letter-spacing: 4px;
+  color: #ffffff;
+  text-shadow: 0 0 12px rgba(0, 245, 255, 0.6);
+  z-index: 2;
+}
+
+.nabbar-brand-glow {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 60px;
+  height: 20px;
+  background: radial-gradient(circle, rgba(0, 245, 255, 0.4) 0%, transparent 70%);
+  filter: blur(5px);
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* Navigation Menu */
+.nabbar-menu {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.nabbar-item {
+  position: relative;
+  padding: 10px 20px;
+  border-radius: 20px;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 1.5px;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.6);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+  box-sizing: border-box;
+}
+
+.nabbar-icon {
+  width: 18px;
+  height: 18px;
+  transition: transform 0.3s ease;
+}
+
+.nabbar-item:hover {
+  color: #00f5ff;
+  text-shadow: 0 0 8px rgba(0, 245, 255, 0.4);
+}
+
+.nabbar-item:hover .nabbar-icon {
+  transform: translateY(-2px);
+}
+
+.nabbar-item.active {
+  color: #ffffff;
+}
+
+/* Liquid Glass active bubble effect */
+.nabbar-active-bubble {
+  position: absolute;
+  inset: 0;
+  border-radius: 20px;
+  background: linear-gradient(135deg, rgba(0, 245, 255, 0.15), rgba(138, 43, 226, 0.15));
+  border: 1px solid rgba(0, 245, 255, 0.3);
+  box-shadow: 
+    0 0 15px rgba(0, 245, 255, 0.2),
+    inset 0 0 8px rgba(255, 255, 255, 0.1);
+  z-index: -1;
+  animation: floatBubble 6s ease-in-out infinite alternate;
+}
+
+@keyframes floatBubble {
+  0% {
+    border-radius: 20px 24px 18px 22px;
+  }
+  33% {
+    border-radius: 22px 20px 24px 18px;
+  }
+  66% {
+    border-radius: 18px 22px 20px 24px;
+  }
+  100% {
+    border-radius: 24px 18px 22px 20px;
+  }
+}
+
+/* Status Indicator */
+.nabbar-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #00f5ff;
+  box-shadow: 0 0 10px #00f5ff;
+}
+
+.status-indicator.online {
+  animation: pulseGlow 2s infinite ease-in-out;
+}
+
+.status-text {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 2px;
+  color: rgba(0, 245, 255, 0.85);
+  text-shadow: 0 0 6px rgba(0, 245, 255, 0.3);
+}
+
+@keyframes pulseGlow {
+  0% {
+    transform: scale(0.9);
+    box-shadow: 0 0 4px #00f5ff, 0 0 8px #00f5ff;
+  }
+  50% {
+    transform: scale(1.1);
+    box-shadow: 0 0 8px #00f5ff, 0 0 16px #00f5ff;
+  }
+  100% {
+    transform: scale(0.9);
+    box-shadow: 0 0 4px #00f5ff, 0 0 8px #00f5ff;
+  }
+}
+
+/* Responsive Scaling */
+@media (max-width: 768px) {
+  .nabbar-container {
+    height: auto;
+    flex-direction: column;
+    padding: 16px;
+    gap: 16px;
+    border-radius: 24px;
+  }
+  
+  .nabbar-menu {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+}
