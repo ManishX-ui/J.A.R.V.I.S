@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react"
+import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef } from "react"
 
 const getColorTheme = (colorName) => {
   switch (colorName) {
@@ -47,7 +47,7 @@ const getColorTheme = (colorName) => {
   }
 }
 
-export default function JarvisBlob({ color = 'cyan', intensity = 1.5, size = 105, lang = 'en-US', groqApiKey = '' }) {
+const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, lang = 'en-US', onNewMessage }, ref) => {
   const [active, setActive] = useState(false)
   const [listening, setListening] = useState(false)
   const [isAwake, setIsAwake] = useState(true) // Starts awake on activate
@@ -75,7 +75,6 @@ export default function JarvisBlob({ color = 'cyan', intensity = 1.5, size = 105
   const intensityRef = useRef(intensity)
   const sizeRef = useRef(size)
   const langRef = useRef(lang)
-  const groqApiKeyRef = useRef(groqApiKey)
   
   const volumeRef = useRef(0)
   const animationFrameIdRef = useRef(null)
@@ -86,8 +85,22 @@ export default function JarvisBlob({ color = 'cyan', intensity = 1.5, size = 105
     intensityRef.current = intensity
     sizeRef.current = size
     langRef.current = lang
-    groqApiKeyRef.current = groqApiKey
-  }, [color, intensity, size, lang, groqApiKey])
+  }, [color, intensity, size, lang])
+
+  useImperativeHandle(ref, () => ({
+    sendTextMessage: async (text) => {
+      // Auto-activate system if not activated
+      if (!active) {
+        await handleActivate()
+      }
+      
+      if (onNewMessage) onNewMessage('user', text)
+      setCurrentSpeech(text)
+      setIsAwake(true)
+      resetInactivityTimer()
+      await takeCommand(text)
+    }
+  }))
 
   // WAKE WORDS LIST
   const wakeWords = [
@@ -109,6 +122,8 @@ export default function JarvisBlob({ color = 'cyan', intensity = 1.5, size = 105
   // HANDLE SPEECH THROUGH STATE MACHINE
   const handleIncomingSpeech = (message) => {
     const isHindi = langRef.current.startsWith('hi')
+
+    if (onNewMessage) onNewMessage('user', message)
 
     if (isAwakeRef.current) {
       resetInactivityTimer()
@@ -232,6 +247,7 @@ export default function JarvisBlob({ color = 'cyan', intensity = 1.5, size = 105
   const respond = (text) => {
     setJarvisResponse(text)
     speak(text)
+    if (onNewMessage) onNewMessage('jarvis', text)
   }
 
   // COMMANDS
@@ -278,20 +294,23 @@ export default function JarvisBlob({ color = 'cyan', intensity = 1.5, size = 105
     await callGroqLLM(message)
   }
 
+  const handleClientCommand = (command) => {
+    if (command.type === 'OPEN_WEB') {
+      console.log("Opening web link:", command.url)
+      window.open(command.url, "_blank")
+    } else if (command.type === 'WHATSAPP') {
+      const phone = command.phone || ""
+      const text = command.message || command.raw || ""
+      const url = `https://web.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(text)}`
+      console.log("Opening WhatsApp web:", url)
+      window.open(url, "_blank")
+    }
+  }
+
   // CALL GROQ LLM API VIA BACKEND PROXY (RESOLVES CORS)
   const callGroqLLM = async (prompt) => {
     const activeLang = langRef.current
     const isHindi = activeLang.startsWith('hi')
-    const apiKey = groqApiKeyRef.current
-
-    if (!apiKey) {
-      const errorMsg = isHindi
-        ? "कृपया बातचीत शुरू करने के लिए सेटिंग्स में अपनी ग्रॉक ए पी आई कुंजी कॉन्फ़िगर करें।"
-        : "Please configure your Groq API Key in the Settings tab to start conversation."
-      setJarvisResponse(errorMsg)
-      speak(errorMsg)
-      return
-    }
 
     // Set initial loading indicator
     setJarvisResponse(isHindi ? "सिस्टम प्रतिक्रिया लोड हो रही है..." : "Synchronizing synaptic response...")
@@ -303,14 +322,7 @@ export default function JarvisBlob({ color = 'cyan', intensity = 1.5, size = 105
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          apiKey: apiKey,
           messages: [
-            {
-              role: "system",
-              content: isHindi
-                ? "आप जार्विस (JARVIS) हैं, एक अत्यंत बुद्धिमान एआई सहायक। उपयोगकर्ता के इनपुट का उत्तर हिन्दी में दें। आपका उत्तर बहुत ही संक्षिप्त और स्वाभाविक होना चाहिए (केवल १ या २ छोटे वाक्य) ताकि इसे जल्दी बोला जा सके।"
-                : "You are JARVIS, an extremely intelligent and advanced AI assistant. Respond in English. Your response must be very concise, conversational, and direct (at most 1 or 2 short sentences) so that it can be spoken out quickly."
-            },
             {
               role: "user",
               content: prompt
@@ -325,13 +337,20 @@ export default function JarvisBlob({ color = 'cyan', intensity = 1.5, size = 105
       }
 
       const data = await response.json()
-      const fullText = data.choices[0]?.message?.content || ""
+      const fullText = data.text || ""
+      const command = data.command
       
       setJarvisResponse(fullText)
+      if (onNewMessage) onNewMessage('jarvis', fullText)
 
       // Voice synthesis
       if (fullText) {
         speak(fullText)
+      }
+
+      // Handle system commands
+      if (command) {
+        handleClientCommand(command)
       }
 
     } catch (err) {
@@ -341,6 +360,7 @@ export default function JarvisBlob({ color = 'cyan', intensity = 1.5, size = 105
         : "I apologize, but connection latency is preventing a synaptic response at this moment."
       setJarvisResponse(errorMsg)
       speak(errorMsg)
+      if (onNewMessage) onNewMessage('jarvis', errorMsg)
     }
   }
 
@@ -853,7 +873,7 @@ export default function JarvisBlob({ color = 'cyan', intensity = 1.5, size = 105
       )}
     </div>
   )
-}
+})
 
 const styles = {
   container: {
@@ -976,3 +996,5 @@ const styles = {
     textShadow: "0 0 8px rgba(0, 245, 255, 0.4)"
   }
 }
+
+export default JarvisBlob

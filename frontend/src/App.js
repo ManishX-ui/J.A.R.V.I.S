@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import './App.css'
 import Nabbar from './components/Nabbar'
 import JarvisBlob from './components/blob'
@@ -29,10 +29,30 @@ function App() {
   const [blinkIntensity, setBlinkIntensity] = useState(1.5)
   const [blobSize, setBlobSize] = useState(105)
   const [speechLang, setSpeechLang] = useState('en-US')
-  const [groqApiKey, setGroqApiKey] = useState(() => {
-    return localStorage.getItem('groq_api_key') || ''
-  })
-  const [saveStatus, setSaveStatus] = useState('')
+  const [chatHistory, setChatHistory] = useState([
+    { sender: 'jarvis', text: 'Core system active. Neural links online.', time: new Date().toLocaleTimeString() }
+  ])
+  const [typedMessage, setTypedMessage] = useState('')
+  const blobRef = useRef(null)
+  const chatMessagesEndRef = useRef(null)
+
+  const handleNewMessage = (sender, text) => {
+    setChatHistory(prev => [...prev, { sender, text, time: new Date().toLocaleTimeString() }])
+  }
+
+  const handleSendMessage = () => {
+    if (!typedMessage.trim()) return
+    if (blobRef.current) {
+      blobRef.current.sendTextMessage(typedMessage)
+      setTypedMessage('')
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab === 'chat' && chatMessagesEndRef.current) {
+      chatMessagesEndRef.current.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [chatHistory, activeTab])
 
   // Simulate updating stats
   useEffect(() => {
@@ -83,11 +103,50 @@ function App() {
         
         {/* Left Side: Jarvis Voice Blob (Front Page Center) */}
         <div className="assistant-panel">
-          <JarvisBlob color={blobColor} intensity={blinkIntensity} size={blobSize} lang={speechLang} groqApiKey={groqApiKey} />
+          <JarvisBlob 
+            ref={blobRef}
+            color={blobColor} 
+            intensity={blinkIntensity} 
+            size={blobSize} 
+            lang={speechLang} 
+            onNewMessage={handleNewMessage}
+          />
         </div>
 
         {/* Right Side: Tab details */}
         <div className="details-panel fade-in">
+          {activeTab === 'chat' && (
+            <div className="tab-content">
+              <h2 className="section-title">CHAT TERMINAL</h2>
+              <div className="chat-container">
+                <div className="chat-messages">
+                  {chatHistory.map((msg, index) => (
+                    <div key={index} className={`chat-message ${msg.sender}`}>
+                      <div className="message-text">{msg.text}</div>
+                      <span className="message-time">{msg.time}</span>
+                    </div>
+                  ))}
+                  <div ref={chatMessagesEndRef} />
+                </div>
+                <div className="chat-input-container">
+                  <input
+                    type="text"
+                    className="chat-input"
+                    placeholder="Type system instruction..."
+                    value={typedMessage}
+                    onChange={(e) => setTypedMessage(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleSendMessage()
+                    }}
+                  />
+                  <button className="chat-send-btn" onClick={handleSendMessage}>
+                    SEND
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {activeTab === 'core' && (
             <div className="tab-content">
               <h2 className="section-title">SYSTEM MONITOR</h2>
@@ -333,71 +392,7 @@ function App() {
                   />
                 </div>
 
-                 <div className="settings-item" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
-                  <span className="settings-label">Groq API Key</span>
-                  <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
-                    <input 
-                      type="password" 
-                      placeholder="Enter your gsk_... API Key"
-                      value={groqApiKey}
-                      onChange={(e) => {
-                        setGroqApiKey(e.target.value)
-                        setSaveStatus('')
-                      }}
-                      style={{
-                        background: 'rgba(10, 15, 26, 0.6)',
-                        border: '1px solid rgba(255, 255, 255, 0.15)',
-                        borderRadius: '8px',
-                        color: '#ffffff',
-                        padding: '8px 12px',
-                        fontFamily: "'Rajdhani', sans-serif",
-                        fontSize: '14px',
-                        outline: 'none',
-                        flexGrow: 1,
-                        boxSizing: 'border-box',
-                        letterSpacing: '1px'
-                      }}
-                    />
-                    <button
-                      onClick={() => {
-                        localStorage.setItem('groq_api_key', groqApiKey)
-                        setSaveStatus('SAVED')
-                        setTimeout(() => setSaveStatus(''), 3000)
-                      }}
-                      style={{
-                        background: 'rgba(0, 245, 255, 0.12)',
-                        border: '1px solid rgba(0, 245, 255, 0.4)',
-                        borderRadius: '8px',
-                        color: '#00f5ff',
-                        padding: '8px 16px',
-                        fontFamily: "'Orbitron', sans-serif",
-                        fontSize: '12px',
-                        fontWeight: '700',
-                        cursor: 'pointer',
-                        transition: 'all 0.3s ease',
-                        textShadow: '0 0 8px rgba(0, 245, 255, 0.5)'
-                      }}
-                    >
-                      SAVE
-                    </button>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px' }}>
-                    <span style={{ fontSize: '11px', color: 'rgba(255, 255, 255, 0.4)' }}>
-                      Keys are saved locally in your browser.
-                    </span>
-                    {saveStatus && (
-                      <span style={{ 
-                        fontSize: '11px', 
-                        color: '#10b981', 
-                        fontWeight: '700', 
-                        fontFamily: "'Orbitron', sans-serif",
-                        textShadow: '0 0 8px rgba(16, 185, 129, 0.6)'
-                      }}>
-                        {saveStatus} ✓
-                      </span>
-                    )}
-                  </div>
-                </div>
+
               </div>
             </div>
           )}

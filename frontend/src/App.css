@@ -649,3 +649,112 @@ body::before {
   pointer-events: none;
   opacity: 0.15;
 }
+
+/* --- Chat Interface --- */
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 440px;
+  background: rgba(10, 14, 23, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.chat-messages {
+  flex-grow: 1;
+  padding: 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-sizing: border-box;
+}
+
+.chat-message {
+  max-width: 80%;
+  padding: 12px 16px;
+  border-radius: 14px;
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 15px;
+  line-height: 140%;
+  word-wrap: break-word;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.chat-message.user {
+  align-self: flex-end;
+  background: rgba(168, 85, 247, 0.15);
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  color: #f3e8ff;
+  border-bottom-right-radius: 2px;
+  text-shadow: 0 0 8px rgba(168, 85, 247, 0.3);
+}
+
+.chat-message.jarvis {
+  align-self: flex-start;
+  background: rgba(0, 245, 255, 0.08);
+  border: 1px solid rgba(0, 245, 255, 0.35);
+  color: #e0f2fe;
+  border-bottom-left-radius: 2px;
+  text-shadow: 0 0 8px rgba(0, 245, 255, 0.25);
+}
+
+.message-time {
+  display: block;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.3);
+  margin-top: 4px;
+  text-align: right;
+}
+
+.chat-input-container {
+  display: flex;
+  gap: 10px;
+  padding: 16px 20px;
+  background: rgba(10, 15, 26, 0.85);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  box-sizing: border-box;
+  align-items: center;
+}
+
+.chat-input {
+  flex-grow: 1;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  color: #ffffff;
+  padding: 10px 14px;
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 15px;
+  outline: none;
+  transition: all 0.3s ease;
+}
+
+.chat-input:focus {
+  border-color: rgba(0, 245, 255, 0.5);
+  background: rgba(0, 245, 255, 0.02);
+  box-shadow: 0 0 10px rgba(0, 245, 255, 0.15);
+}
+
+.chat-send-btn {
+  background: rgba(0, 245, 255, 0.12);
+  border: 1px solid rgba(0, 245, 255, 0.45);
+  border-radius: 8px;
+  color: #00f5ff;
+  padding: 10px 20px;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  text-shadow: 0 0 8px rgba(0, 245, 255, 0.5);
+}
+
+.chat-send-btn:hover {
+  background: rgba(0, 245, 255, 0.25);
+  border-color: rgba(0, 245, 255, 0.8);
+  box-shadow: 0 0 12px rgba(0, 245, 255, 0.3);
+}
