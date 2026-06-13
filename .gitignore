@@ -24,3 +24,14 @@
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Database and Cache
+backend/memory/chroma_db/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.pytest_cache/
+.venv/
+venv/
+env/

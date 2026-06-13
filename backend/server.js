@@ -1,7 +1,21 @@
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
-import { exec } from 'child_process'
+import { createServer } from 'http'
+import { WebSocketServer, WebSocket } from 'ws'
+import eventBus from './core/event_bus.js'
+import orchestrator from './core/orchestrator.js'
+import router from './core/router.js'
+
+// Import all agents to register their Event Bus listeners
+import './agents/planner_agent.js'
+import './agents/coordinator_agent.js'
+import './agents/system_agent.js'
+import './agents/memory_agent.js'
+import './agents/research_agent.js'
+import './agents/coding_agent.js'
+import './agents/browser_agent.js'
+import './agents/vision_agent.js'
 
 const app = express()
 const PORT = process.env.PORT || 5000
@@ -13,127 +27,116 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'JARVIS backend is online' })
 })
 
+// HTTP Route mapping to original LLM brain directly for quick compatibility
 app.post('/api/chat', async (req, res) => {
-  const { messages } = req.body
-  const apiKey = process.env.GROQ_API_KEY
+  const { messages, provider } = req.body
+  const text = messages[messages.length - 1]?.content || ''
+  
+  // Publish text command to event bus to orchestrate normally
+  eventBus.publish('text_command', { text });
 
-  if (!apiKey) {
-    return res.status(400).json({ error: 'Groq API Key is not configured on the backend server.' })
-  }
+  // Wait for the speak_response or agent_result event to return the response
+  const responsePromise = new Promise((resolve) => {
+    const speakUnsubscribe = eventBus.subscribe('speak_response', (speakData) => {
+      speakUnsubscribe();
+      resultUnsubscribe();
+      resolve(speakData);
+    });
 
-  // Ensure system prompt contains command tags instructions
-  const updatedMessages = [...messages]
-  const systemPromptIndex = updatedMessages.findIndex(m => m.role === 'system')
-
-  const systemInstructions = `You are JARVIS, an extremely intelligent and advanced AI assistant running on the user's Windows machine.
-Respond in the language the user speaks (English or Hindi).
-Your response must be very concise, conversational, and direct (at most 1 or 2 short sentences).
-
-You have direct access to the user's system to run local applications, open websites, and send WhatsApp messages.
-If the user commands you to do one of these actions, you must output a special command tag at the end of your response:
-
-1. To run a local Windows application:
-   Tag: [CMD: RUN_APP app_name]
-   Valid app_names: 'notepad', 'calc' (for Calculator), 'mspaint' (for Paint), 'explorer' (for File Explorer), 'cmd' (for Command Prompt), 'taskmgr' (for Task Manager).
-   Example: "Opening Notepad. [CMD: RUN_APP notepad]"
-
-2. To open a website:
-   Tag: [CMD: OPEN_WEB url]
-   Example: "Opening YouTube. [CMD: OPEN_WEB https://youtube.com]"
-
-3. To send a WhatsApp message:
-   Tag: [CMD: WHATSAPP phone_number "message text"]
-   Example: "Opening WhatsApp to send your message. [CMD: WHATSAPP +919999999999 \"Hello, how are you?\"]"
-   Note: If the user asks to send a WhatsApp message but doesn't specify a phone number, politely ask them for the phone number first.
-
-Do not output any command tags unless explicitly requested by the user's command.`
-
-  if (systemPromptIndex !== -1) {
-    updatedMessages[systemPromptIndex] = {
-      role: 'system',
-      content: systemInstructions
-    }
-  } else {
-    updatedMessages.unshift({
-      role: 'system',
-      content: systemInstructions
-    })
-  }
-
-  try {
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: 'llama-3.1-8b-instant',
-        messages: updatedMessages,
-        temperature: 0.7,
-        max_tokens: 150
-      })
-    })
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}))
-      return res.status(response.status).json({ 
-        error: errorData.error?.message || `Groq API responded with status ${response.status}` 
-      })
-    }
-
-    const data = await response.json()
-    let text = data.choices[0]?.message?.content || ''
-    let clientCommand = null
-
-    // Regex to match [CMD: TYPE ARG1 ARG2 ...]
-    const cmdRegex = /\[CMD:\s*([A-Z_]+)\s*([^\]]+)?\]/
-    const match = text.match(cmdRegex)
-
-    if (match) {
-      const type = match[1]
-      const argsStr = match[2] ? match[2].trim() : ""
-      
-      // Clean up the text by removing the command tag
-      text = text.replace(cmdRegex, "").trim()
-
-      if (type === 'RUN_APP') {
-        const appName = argsStr.toLowerCase()
-        const allowedApps = ['notepad', 'calc', 'mspaint', 'explorer', 'cmd', 'taskmgr']
-        if (allowedApps.includes(appName)) {
-          console.log(`Executing system app: ${appName}`)
-          exec(`start ${appName}`, (err) => {
-            if (err) console.error(`Failed to launch app ${appName}:`, err)
-          })
-        }
-      } else if (type === 'OPEN_WEB') {
-        clientCommand = { type: 'OPEN_WEB', url: argsStr }
-      } else if (type === 'WHATSAPP') {
-        // WHATSAPP phone "message text"
-        const waRegex = /^(\+?\d+)\s+"([^"]+)"/
-        const waMatch = argsStr.match(waRegex)
-        if (waMatch) {
-          clientCommand = {
-            type: 'WHATSAPP',
-            phone: waMatch[1],
-            message: waMatch[2]
-          }
-        } else {
-          clientCommand = { type: 'WHATSAPP', raw: argsStr }
-        }
+    const resultUnsubscribe = eventBus.subscribe('agent_result', (resultData) => {
+      if (resultData.agent === 'SYSTEM' || resultData.agent === 'PLANNER') {
+        speakUnsubscribe();
+        resultUnsubscribe();
+        resolve({ text: resultData.error || `Command executed: ${JSON.stringify(resultData.result || '')}`, provider: 'system' });
       }
-    }
+    });
 
-    res.json({
-      text: text,
-      command: clientCommand
-    })
-  } catch (error) {
-    console.error('Error proxying to Groq API:', error)
-    res.status(500).json({ error: 'Internal server error during Groq API request' })
-  }
+    // Timeout safety
+    setTimeout(() => {
+      speakUnsubscribe();
+      resultUnsubscribe();
+      resolve({ text: 'No response received from agent pipeline.', provider: 'timeout' });
+    }, 15000);
+  });
+
+  const response = await responsePromise;
+  res.json({
+    text: response.text,
+    provider: response.provider
+  })
 })
 
-app.listen(PORT, () => {
-  console.log(`JARVIS backend server running on port ${PORT}`)
+const server = createServer(app)
+const wss = new WebSocketServer({ server })
+
+// Broadcast utility to push payloads to all active WebSocket clients (UI, voice daemon, etc.)
+function broadcast(event, data = {}) {
+  const payload = JSON.stringify({ event, data });
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  });
+}
+
+// Pipe Event Bus events to WebSocket Clients
+eventBus.subscribe('state_changed', (data) => broadcast('state_changed', data));
+eventBus.subscribe('diagnostic_log', (data) => broadcast('diagnostic_log', data));
+eventBus.subscribe('agent_activity', (data) => broadcast('agent_activity', data));
+eventBus.subscribe('agent_result', (data) => broadcast('agent_result', data));
+eventBus.subscribe('speak_response', (data) => broadcast('speak_response', data));
+eventBus.subscribe('approval_required', (data) => broadcast('approval_required', data));
+eventBus.subscribe('plan_generated', (data) => broadcast('plan_generated', data));
+eventBus.subscribe('step_status_changed', (data) => broadcast('step_status_changed', data));
+
+// WebSocket connection routing
+wss.on('connection', (ws) => {
+  console.log('[WEBSOCKET] Client connected.');
+  
+  // Send initial state
+  ws.send(JSON.stringify({
+    event: 'state_changed',
+    data: { newState: orchestrator.currentState }
+  }));
+
+  ws.on('message', (message) => {
+    try {
+      const { event, data } = JSON.parse(message);
+      console.log(`[WEBSOCKET] Received: ${event}`, data);
+
+      switch (event) {
+        case 'voice_transcript':
+          eventBus.publish('voice_transcript', { text: data.text, lang: data.lang || 'en-US' });
+          break;
+        case 'text_command':
+          eventBus.publish('text_command', { text: data.text });
+          break;
+        case 'permission_response':
+          // Publish response back to the matching pending channel in permissions.js
+          if (data.replyChannel) {
+            eventBus.publish(data.replyChannel, { approved: data.approved });
+          }
+          break;
+        case 'speech_start':
+          eventBus.publish('speech_start');
+          break;
+        case 'speech_end':
+          eventBus.publish('speech_end');
+          break;
+        default:
+          console.warn(`[WEBSOCKET] Unknown event: ${event}`);
+      }
+    } catch (err) {
+      console.error('[WEBSOCKET] Error parsing message:', err.message);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('[WEBSOCKET] Client disconnected.');
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`JARVIS API server running on port ${PORT}`)
+  eventBus.publish('diagnostic_log', { type: 'INFO', msg: 'Neural API gateway listening.' });
 })

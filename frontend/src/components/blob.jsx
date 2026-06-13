@@ -34,7 +34,6 @@ const getColorTheme = (colorName) => {
       }
     case 'cyan':
     default:
-      // A gorgeous deep indigo/blue/violet theme to match the user's reference image
       return {
         core: '#7a82fc',
         node: 'rgba(165, 180, 252, 0.85)',
@@ -47,7 +46,21 @@ const getColorTheme = (colorName) => {
   }
 }
 
-const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, lang = 'en-US', autoListen = true, onNewMessage }, ref) => {
+const JarvisBlob = forwardRef(({ 
+  color = 'cyan', 
+  intensity = 1.5, 
+  size = 105, 
+  lang = 'en-US', 
+  autoListen = true, 
+  onNewMessage,
+  groqKey = '',
+  geminiKey = '',
+  provider = 'gemini',
+  addDiagnosticLog,
+  audioDeviceId = '',
+  isCalibrating = false,
+  onCalibrationComplete
+}, ref) => {
   const [active, setActive] = useState(false)
   const [listening, setListening] = useState(false)
   const [isAwake, setIsAwake] = useState(true) // Starts awake on activate
@@ -61,25 +74,36 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
   const streamRef = useRef(null)
   
   // Refs for tracking states across async event listeners
+  const activeRef = useRef(false)
   const isAwakeRef = useRef(true)
   const isSpeakingRef = useRef(false)
+  const recognitionRunningRef = useRef(false)
   const inactivityTimeoutRef = useRef(null)
   const activeUtterancesRef = useRef([])
   
-  useEffect(() => {
-    isAwakeRef.current = isAwake
-  }, [isAwake])
+  // Noise gate & calibration
+  const noiseThresholdRef = useRef(15) // default gate
+  const calibrationSamplesRef = useRef([])
+  const isCalibratingRef = useRef(false)
+  const lastActiveSoundTimeRef = useRef(Date.now())
+  const lastSpeakStartTimeRef = useRef(0)
 
-  // Shared refs for settings to update canvas render loop instantly at 60 FPS
+  // Sync settings props to refs
   const colorRef = useRef(color)
   const intensityRef = useRef(intensity)
   const sizeRef = useRef(size)
   const langRef = useRef(lang)
-  
   const volumeRef = useRef(0)
   const animationFrameIdRef = useRef(null)
 
-  // Sync settings props to refs
+  useEffect(() => {
+    activeRef.current = active
+  }, [active])
+
+  useEffect(() => {
+    isAwakeRef.current = isAwake
+  }, [isAwake])
+
   useEffect(() => {
     colorRef.current = color
     intensityRef.current = intensity
@@ -99,100 +123,173 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
     }
   }, [autoListen])
 
+  // Handle key changes
+  const groqKeyRef = useRef(groqKey)
+  const geminiKeyRef = useRef(geminiKey)
+  const providerRef = useRef(provider)
+
+  useEffect(() => {
+    groqKeyRef.current = groqKey
+    geminiKeyRef.current = geminiKey
+    providerRef.current = provider
+  }, [groqKey, geminiKey, provider])
+
+  // Handle calibration prop change
+  useEffect(() => {
+    isCalibratingRef.current = isCalibrating
+    if (isCalibrating) {
+      calibrationSamplesRef.current = []
+      if (addDiagnosticLog) addDiagnosticLog('INFO', 'Mic calibration: Please remain silent...')
+      
+      // Auto complete calibration after 2 seconds
+      const timer = setTimeout(() => {
+        const samples = calibrationSamplesRef.current
+        if (samples.length > 0) {
+          const maxVal = Math.max(...samples)
+          // Threshold is maximum ambient noise + small safety buffer
+          noiseThresholdRef.current = Math.max(12, maxVal + 8)
+        } else {
+          noiseThresholdRef.current = 15 // fallback
+        }
+        
+        if (addDiagnosticLog) {
+          addDiagnosticLog('VOICE', `Microphone calibrated. Ambient noise floor gate set to ${noiseThresholdRef.current.toFixed(1)} dB`)
+        }
+        
+        if (onCalibrationComplete) onCalibrationComplete()
+      }, 2000)
+
+      return () => clearTimeout(timer)
+    }
+  }, [isCalibrating])
+
+  // EXPOSE TEXT SENDING METHOD TO PARENT (CHATS)
   useImperativeHandle(ref, () => ({
     sendTextMessage: async (text) => {
-      // Auto-activate system if not activated
       if (!active) {
         await handleActivate()
       }
       
       if (onNewMessage) onNewMessage('user', text)
+      if (addDiagnosticLog) addDiagnosticLog('INFO', `User text command: "${text}"`)
       setCurrentSpeech(text)
       setIsAwake(true)
       resetInactivityTimer()
+      
+      // If speaking, cancel it
+      if (isSpeakingRef.current) {
+        window.speechSynthesis.cancel()
+        cleanupSpeech()
+      }
+      
       await takeCommand(text)
     }
   }))
 
-  // WAKE WORDS LIST
-  const wakeWords = [
-    "hello jarvis", "hi jarvis", "hey jarvis", "ok jarvis", "jarvis",
-    "हेलो जार्विस", "नमस्ते जार्विस", "हाय जार्विस", "जार्विस"
-  ]
+  // SOUNDALIKE PHONETIC WAKE WORDS (Wakes up if any match is found)
+  // Matches "Jarvis", "Hey Jarvis", "Okay Jarvis" in Hindi & English, plus sound-alikes
+  const wakeWordRegex = /\b(jarvis|hey\s+jarvis|ok\s+jarvis|okay\s+jarvis|hello\s+jarvis|hi\s+jarvis|javis|jarves|charvis|garvis|travis|jaffas|जार्विस|हेलो\s+जार्विस|नमस्ते\s+जार्विस)\b/i
 
-  // RESET INACTIVITY TIMER
   const resetInactivityTimer = () => {
     if (inactivityTimeoutRef.current) {
       clearTimeout(inactivityTimeoutRef.current)
     }
-    // Only go to standby after 8 seconds of silence if autoListen is false
     if (!autoListenRef.current) {
       inactivityTimeoutRef.current = setTimeout(() => {
         setIsAwake(false)
         inactivityTimeoutRef.current = null
-      }, 8000)
+        if (addDiagnosticLog) addDiagnosticLog('INFO', 'System entering standby mode. Waiting for wake word.')
+      }, 10000) // Standby after 10s of silence
     } else {
       setIsAwake(true)
     }
   }
 
-  // HANDLE SPEECH THROUGH STATE MACHINE
-  const handleIncomingSpeech = (message) => {
+  // CORE STATE ENGINE FOR TRANSCRIBED VOICE INPUTS
+  const handleIncomingSpeech = (transcript) => {
     const isHindi = langRef.current.startsWith('hi')
-
-    if (onNewMessage) onNewMessage('user', message)
+    const cleanedText = transcript.trim()
+    if (!cleanedText) return
 
     resetInactivityTimer()
 
-    const foundWake = wakeWords.find(word => message.toLowerCase().includes(word))
+    // 1. Evaluate Noise Gate
+    // If the user hasn't made sound above the ambient gate in the last 4 seconds, ignore it
+    const timeSinceLastSound = Date.now() - lastActiveSoundTimeRef.current
+    if (timeSinceLastSound > 4000) {
+      console.log("Noise gate suppressed transcript:", cleanedText)
+      if (addDiagnosticLog) addDiagnosticLog('WARN', `Filtered background noise: "${cleanedText}"`)
+      return
+    }
 
-    if (autoListenRef.current || isAwakeRef.current || foundWake) {
+    if (addDiagnosticLog) addDiagnosticLog('STT', `Recognized speech: "${cleanedText}"`)
+
+    // 2. Wake Word Detection
+    const match = cleanedText.match(wakeWordRegex)
+
+    if (autoListenRef.current || isAwakeRef.current || match) {
       setIsAwake(true)
-      if (foundWake) {
-        const index = message.toLowerCase().indexOf(foundWake)
-        const command = message.substring(index + foundWake.length).trim()
+      
+      if (match) {
+        const matchedWord = match[0]
+        const command = cleanedText.substring(cleanedText.indexOf(matchedWord) + matchedWord.length).trim()
+        
+        if (addDiagnosticLog) addDiagnosticLog('CORE', `Wake word matched: "${matchedWord}"`)
+        
         if (command) {
           setJarvisResponse("")
-          setCurrentSpeech(message)
+          setCurrentSpeech(cleanedText)
+          if (onNewMessage) onNewMessage('user', cleanedText)
           takeCommand(command)
         } else {
+          // Wake word only
           setJarvisResponse("")
-          setCurrentSpeech(message)
-          respond(isHindi ? "जी बोलिए, मैं सुन रहा हूँ।" : "Yes, I am listening.")
+          setCurrentSpeech(cleanedText)
+          if (onNewMessage) onNewMessage('user', cleanedText)
+          respond(isHindi ? "जी बोलिए, मैं सुन रहा हूँ।" : "Yes, I am listening. How can I help?")
         }
       } else {
+        // Continuous listening or already awake, treat entire text as command
         setJarvisResponse("")
-        setCurrentSpeech(message)
-        takeCommand(message)
+        setCurrentSpeech(cleanedText)
+        if (onNewMessage) onNewMessage('user', cleanedText)
+        takeCommand(cleanedText)
       }
     } else {
-      console.log("Ignored speech (no wake word found and standby active):", message)
+      console.log("Speech ignored (standby mode, no wake word):", cleanedText)
     }
   }
 
-  // SPEAK FUNCTION
+  // SPEECH SYNTHESIS (TTS) FUNCTION WITH RECOVERY AND CONCURRENCY RESILIENCE
   const speak = (text) => {
+    if (!window.speechSynthesis) {
+      if (addDiagnosticLog) addDiagnosticLog('WARN', 'Text-to-Speech is not supported in this browser.')
+      return
+    }
+
+    // Cancel any ongoing speaking immediately
+    window.speechSynthesis.cancel()
+
     const utterance = new SpeechSynthesisUtterance(text)
     const activeLang = langRef.current
     utterance.lang = activeLang
-    utterance.rate = 1
-    utterance.pitch = 1
-    utterance.volume = 1
+    utterance.rate = 1.05 // Slightly faster for responsiveness
+    utterance.pitch = 0.95 // Sleek assistant tone
+    utterance.volume = 1.0
     
-    if (window.speechSynthesis) {
-      const voices = window.speechSynthesis.getVoices()
-      const voice = voices.find(v => v.lang.toLowerCase().startsWith(activeLang.split('-')[0].toLowerCase()))
-      if (voice) {
-        utterance.voice = voice
-      }
+    // Attempt to select native speech synthesis voices
+    const voices = window.speechSynthesis.getVoices()
+    const voice = voices.find(v => v.lang.toLowerCase().startsWith(activeLang.split('-')[0].toLowerCase()))
+    if (voice) {
+      utterance.voice = voice
     }
 
-    // Keep active reference to prevent garbage collection in Chrome
+    // Retain object reference to bypass V8 garbage collection bug in Chrome
     activeUtterancesRef.current.push(utterance)
     
     let safetyTimeout = null
     const textLength = text.length
-    // Average speaking rate: ~12 characters per second. Set a generous safety buffer.
+    // Generous duration estimation: ~12 chars per sec + 4s buffer
     const estimatedDuration = (textLength / 12) * 1000 + 4000 
 
     const cleanupSpeech = () => {
@@ -203,12 +300,13 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
       isSpeakingRef.current = false
       activeUtterancesRef.current = activeUtterancesRef.current.filter(u => u !== utterance)
       
+      // Resume listening
       setTimeout(() => {
-        if (active && !isSpeakingRef.current && recognitionRef.current) {
+        if (activeRef.current && !isSpeakingRef.current && recognitionRef.current && !recognitionRunningRef.current) {
           try {
             recognitionRef.current.start()
           } catch (e) {
-            console.log("Error resuming recognition:", e)
+            console.log("Error resuming recognition after TTS:", e)
           }
         }
       }, 150)
@@ -216,17 +314,22 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
 
     utterance.onstart = () => {
       isSpeakingRef.current = true
-      if (recognitionRef.current) {
+      lastSpeakStartTimeRef.current = Date.now()
+      if (addDiagnosticLog) addDiagnosticLog('TTS', 'Speaking response...')
+      
+      // Stop speech recognition when speaking to prevent self-trigger loop
+      if (recognitionRef.current && recognitionRunningRef.current) {
         try {
           recognitionRef.current.stop()
         } catch (e) {
           console.log("Error stopping recognition on speech start:", e)
         }
       }
-      // Safety fallback: resume mic if browser fails to trigger onend
+      
+      // Watchdog timeout to prevent voice synthesis freezing states
       safetyTimeout = setTimeout(() => {
         if (isSpeakingRef.current) {
-          console.warn("Safety fallback triggered: SpeechSynthesis onend failed to fire.")
+          console.warn("SpeechSynthesis onend failed. Watchdog forced cleanup.")
           cleanupSpeech()
         }
       }, estimatedDuration)
@@ -236,90 +339,98 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
       cleanupSpeech()
     }
 
-    utterance.onerror = () => {
+    utterance.onerror = (e) => {
+      console.warn("SpeechSynthesis error:", e)
       cleanupSpeech()
     }
     
-    speechSynthesis.speak(utterance)
+    window.speechSynthesis.speak(utterance)
   }
 
-  // HELPER TO RESPOND (SPEAKS + UPDATES TERMINAL)
   const respond = (text) => {
     setJarvisResponse(text)
     speak(text)
     if (onNewMessage) onNewMessage('jarvis', text)
   }
 
-  // COMMANDS
+  // EXECUTE ACTIONS & CORE AI COGNITIVE PIPELINE
   const takeCommand = async (message) => {
     const activeLang = langRef.current
     const isHindi = activeLang.startsWith('hi')
+    const lowerMsg = message.toLowerCase()
+
+    if (addDiagnosticLog) addDiagnosticLog('CORE', `Executing command: "${message}"`)
 
     // Local commands check
     if (isHindi) {
-      if (message.includes("गूगल खोलो") || message.includes("गूगल खोलें") || message.includes("गूगल खोलिए")) {
+      if (lowerMsg.includes("गूगल खोलो") || lowerMsg.includes("गूगल खोलें") || lowerMsg.includes("गूगल खोलिए")) {
         respond("गूगल खोल रहा हूँ")
         window.open("https://google.com", "_blank")
         return
       }
-      else if (message.includes("यूट्यूब खोलो") || message.includes("यूट्यूब खोलें") || message.includes("यूट्यूब खोलिए")) {
+      else if (lowerMsg.includes("यूट्यूब खोलो") || lowerMsg.includes("यूट्यूब खोलें") || lowerMsg.includes("यूट्यूब खोलिए")) {
         respond("यूट्यूब खोल रहा हूँ")
         window.open("https://youtube.com", "_blank")
         return
       }
-      else if (message.includes("समय") || message.includes("टाइम")) {
+      else if (lowerMsg.includes("समय") || lowerMsg.includes("टाइम")) {
         const time = new Date().toLocaleTimeString()
         respond(`अभी का समय है ${time}`)
         return
       }
     } else {
-      if (message.includes("open google")) {
+      if (lowerMsg.includes("open google")) {
         respond("Opening Google")
         window.open("https://google.com", "_blank")
         return
       }
-      else if (message.includes("open youtube")) {
+      else if (lowerMsg.includes("open youtube")) {
         respond("Opening Youtube")
         window.open("https://youtube.com", "_blank")
         return
       }
-      else if (message.includes("time")) {
+      else if (lowerMsg.includes("time")) {
         const time = new Date().toLocaleTimeString()
         respond(`Current time is ${time}`)
         return
       }
     }
 
-    // Call Groq LLM for anything else!
-    await callGroqLLM(message)
+    // Call LLM Brain
+    await callAIBrain(message)
   }
 
   const handleClientCommand = (command) => {
     if (command.type === 'OPEN_WEB') {
-      console.log("Opening web link:", command.url)
+      if (addDiagnosticLog) addDiagnosticLog('SYSTEM', `Opening web URL: ${command.url}`)
       window.open(command.url, "_blank")
     } else if (command.type === 'WHATSAPP') {
       const phone = command.phone || ""
       const text = command.message || command.raw || ""
       const url = `https://web.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(text)}`
-      console.log("Opening WhatsApp web:", url)
+      if (addDiagnosticLog) addDiagnosticLog('SYSTEM', `Launching WhatsApp message to ${phone}`)
       window.open(url, "_blank")
     }
   }
 
-  // CALL GROQ LLM API VIA BACKEND PROXY (RESOLVES CORS)
-  const callGroqLLM = async (prompt) => {
-    const activeLang = langRef.current
-    const isHindi = activeLang.startsWith('hi')
+  // SEND PROMPT TO LLM Brain (GEMINI / GROQ)
+  const callAIBrain = async (prompt) => {
+    const isHindi = langRef.current.startsWith('hi')
+    const activeProvider = providerRef.current
 
-    // Set initial loading indicator
     setJarvisResponse(isHindi ? "सिस्टम प्रतिक्रिया लोड हो रही है..." : "Synchronizing synaptic response...")
 
     try {
+      if (addDiagnosticLog) {
+        addDiagnosticLog('AI', `Contacting AI Neural Brain (${activeProvider.toUpperCase()})...`)
+      }
+
       const response = await fetch("http://localhost:5000/api/chat", {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          "x-groq-key": groqKeyRef.current,
+          "x-gemini-key": geminiKeyRef.current
         },
         body: JSON.stringify({
           messages: [
@@ -327,7 +438,8 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
               role: "user",
               content: prompt
             }
-          ]
+          ],
+          provider: activeProvider
         })
       })
 
@@ -343,18 +455,18 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
       setJarvisResponse(fullText)
       if (onNewMessage) onNewMessage('jarvis', fullText)
 
-      // Voice synthesis
       if (fullText) {
         speak(fullText)
       }
 
-      // Handle system commands
       if (command) {
         handleClientCommand(command)
       }
 
     } catch (err) {
-      console.error("Groq API error:", err)
+      console.error("AI Brain error:", err)
+      if (addDiagnosticLog) addDiagnosticLog('WARN', `AI Brain failed: ${err.message}`)
+      
       const errorMsg = isHindi
         ? "माफ़ कीजिए, कनेक्टिविटी समस्या के कारण मैं अभी जवाब नहीं दे पा रहा हूँ।"
         : "I apologize, but connection latency is preventing a synaptic response at this moment."
@@ -364,82 +476,29 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
     }
   }
 
-  // ACTIVATE PROTOCOL
+  // WAKE UP / INITIALIZE AUDIO DRIVERS AND STT ENGINES
   const handleActivate = async () => {
-    if (active) return
-
-    // 1. Setup Speech Recognition
-    const SpeechRecognition =
-      window.SpeechRecognition ||
-      window.webkitSpeechRecognition
-
-    if (!SpeechRecognition) {
-      setMicError("Speech Recognition is not supported in this browser. Please use Chrome or Edge.")
+    // If speaking, click acts as an interrupt (mute)
+    if (isSpeakingRef.current) {
+      if (addDiagnosticLog) addDiagnosticLog('INFO', 'Vocal interrupt triggered via visual core tap.')
+      window.speechSynthesis.cancel()
+      cleanupSpeech()
       return
     }
 
-    setMicError("")
+    if (active) return
 
+    if (addDiagnosticLog) addDiagnosticLog('INFO', 'Initializing primary microphone capture...')
+
+    // 1. Setup Audio Input media device
     try {
-      const recognition = new SpeechRecognition()
-      recognition.continuous = true
-      recognition.interimResults = false
-      recognition.lang = langRef.current
-
-      recognition.onstart = () => {
-        setListening(true)
-        setMicError("")
-      }
-
-      recognition.onerror = (event) => {
-        console.error("Speech recognition error:", event.error)
-        if (event.error === 'not-allowed') {
-          setMicError("Microphone access blocked. Please allow mic permission in your browser address bar.")
-          recognitionRef.current = null
-          setListening(false)
-        } else if (event.error === 'service-not-allowed') {
-          setMicError("Speech recognition service not allowed.")
-          recognitionRef.current = null
-          setListening(false)
-        } else if (event.error === 'network') {
-          setMicError("Speech recognition network error. Please check your internet connection.")
-        } else if (event.error !== 'no-speech') {
-          setMicError(`Speech Recognition Error: ${event.error}`)
-        }
-      }
-
-      recognition.onend = () => {
-        if (recognitionRef.current && !isSpeakingRef.current) {
-          try {
-            recognitionRef.current.start()
-          } catch (e) {
-            console.log("Recognition restart skipped:", e)
-          }
-        }
-      }
-
-      recognition.onresult = (event) => {
-        const transcript =
-          event.results[event.results.length - 1][0].transcript
-            .toLowerCase()
-
-        console.log("Voice Command:", transcript)
-        handleIncomingSpeech(transcript)
-      }
-
-      recognition.start()
-      recognitionRef.current = recognition
-    } catch (err) {
-      console.error("Speech recognition activation failed:", err)
-      setMicError(`Speech recognition start failed: ${err.message}`)
-    }
-
-    // 2. Setup Mic Input for Visuals
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true
-      })
+      const constraints = audioDeviceId 
+        ? { audio: { deviceId: { exact: audioDeviceId } } } 
+        : { audio: true }
+      
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
       streamRef.current = stream
+      if (addDiagnosticLog) addDiagnosticLog('SECURE', 'Microphone audio stream captured successfully.')
 
       const audioContext = new (window.AudioContext || window.webkitAudioContext)()
       audioContextRef.current = audioContext
@@ -452,53 +511,158 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount)
 
-      // Audio analysis loop
+      // Audio frequency monitoring loop
       const updateVolume = () => {
         if (!audioContextRef.current) return
         analyser.getByteFrequencyData(dataArray)
         const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length
         volumeRef.current = average
+
+        // Record calibration values
+        if (isCalibratingRef.current) {
+          calibrationSamplesRef.current.push(average)
+        }
+
+        // Noise gate tracking
+        if (average > noiseThresholdRef.current) {
+          lastActiveSoundTimeRef.current = Date.now()
+        }
+
+        // Real-time voice interruption (barge-in)
+        // If JARVIS is speaking and user speaks loud enough (above gate + buffer), stop TTS
+        if (isSpeakingRef.current && average > noiseThresholdRef.current + 25 && (Date.now() - lastSpeakStartTimeRef.current) > 800) {
+          console.log("Vocal interruption threshold triggered:", average)
+          if (addDiagnosticLog) addDiagnosticLog('VOICE', 'Barge-in detected: User vocal command interrupted speech.')
+          window.speechSynthesis.cancel()
+          cleanupSpeech()
+        }
+
+        // Direct DOM volume meter rendering for ultra low CPU usage
+        const fillBar = document.getElementById('volume-meter-fill')
+        if (fillBar) {
+          const percent = Math.min(100, (average / 80) * 100)
+          fillBar.style.width = `${percent}%`
+          if (percent < 30) fillBar.style.backgroundColor = '#10b981' // Green
+          else if (percent < 75) fillBar.style.backgroundColor = '#f59e0b' // Yellow
+          else fillBar.style.backgroundColor = '#ef4444' // Red
+        }
+
         requestAnimationFrame(updateVolume)
       }
       updateVolume()
     } catch (err) {
-      console.error("Microphone setup failed:", err)
-      setMicError("Microphone hardware access failed. Please ensure your microphone is connected and allowed.")
+      console.error("Microphone hardware setup failed:", err)
+      setMicError("Microphone access failed. Ensure mic is connected and allowed in browser.")
+      if (addDiagnosticLog) addDiagnosticLog('WARN', 'Mic device connection failed. Blocked or absent.')
+      return
+    }
+
+    // 2. Setup Speech Recognition
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SpeechRecognition) {
+      setMicError("Speech Recognition is not supported by this browser. Use Chrome or Edge.")
+      if (addDiagnosticLog) addDiagnosticLog('WARN', 'Critical: SpeechRecognition interface not found.')
+      return
+    }
+
+    setMicError("")
+    if (addDiagnosticLog) addDiagnosticLog('INFO', 'Initializing Web Speech Recognition engine...')
+
+    try {
+      const recognition = new SpeechRecognition()
+      recognition.continuous = true
+      // Support Hinglish
+      recognition.lang = langRef.current === 'en-IN' ? 'hi-IN' : langRef.current
+      recognition.interimResults = false
+
+      recognition.onstart = () => {
+        setListening(true)
+        recognitionRunningRef.current = true
+        setMicError("")
+        if (addDiagnosticLog) addDiagnosticLog('SECURE', `Speech recognition pipeline online [${recognition.lang}]`)
+      }
+
+      recognition.onerror = (event) => {
+        console.error("Speech recognition error:", event.error)
+        recognitionRunningRef.current = false
+        
+        if (event.error === 'not-allowed') {
+          setMicError("Mic access blocked. Check browser address bar permissions.")
+          if (addDiagnosticLog) addDiagnosticLog('WARN', 'STT failed: not-allowed permission.')
+          recognitionRef.current = null
+          setListening(false)
+        } else if (event.error === 'service-not-allowed') {
+          setMicError("STT service not allowed.")
+          if (addDiagnosticLog) addDiagnosticLog('WARN', 'STT failed: service-not-allowed.')
+          recognitionRef.current = null
+          setListening(false)
+        } else if (event.error === 'network') {
+          if (addDiagnosticLog) addDiagnosticLog('WARN', 'STT failed: network disconnect.')
+        } else if (event.error !== 'no-speech') {
+          if (addDiagnosticLog) addDiagnosticLog('WARN', `STT engine error: ${event.error}`)
+        }
+      }
+
+      recognition.onend = () => {
+        recognitionRunningRef.current = false
+        // Auto restart if active and assistant is not speaking
+        if (activeRef.current && !isSpeakingRef.current && recognitionRef.current) {
+          setTimeout(() => {
+            if (activeRef.current && !isSpeakingRef.current && !recognitionRunningRef.current) {
+              try {
+                recognitionRef.current.start()
+              } catch (e) {
+                console.log("Recognition restart deferred:", e)
+              }
+            }
+          }, 200)
+        }
+      }
+
+      recognition.onresult = (event) => {
+        const results = event.results
+        const transcript = results[results.length - 1][0].transcript
+        handleIncomingSpeech(transcript)
+      }
+
+      recognition.start()
+      recognitionRef.current = recognition
+    } catch (err) {
+      console.error("Speech recognition activation failed:", err)
+      setMicError(`Speech recognition start failed: ${err.message}`)
+      if (addDiagnosticLog) addDiagnosticLog('WARN', `STT initialization error: ${err.message}`)
     }
 
     setActive(true)
     setIsAwake(true)
     resetInactivityTimer()
+    
     setTimeout(() => {
       const isHindi = langRef.current.startsWith('hi')
       respond(isHindi ? "जार्विस न्यूरल विज़ुअलाइज़र सक्रिय। मैं सुन रहा हूँ।" : "Jarvis neural visualizer loaded. Ready for input.")
     }, 400)
   }
 
-  // 3. Canvas Simulation Loop
+  // 3. Canvas Simulation Loop (Organic glowing synapses pulse)
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
     
-    // Set internal size
     canvas.width = 400
     canvas.height = 400
 
-    // Initialize neural network particles (resting on a 1.0 relative radius)
-    // 145 particles for extreme hair-like fiber density matching reference image
     const particleCount = 145
     const particles = []
     for (let i = 0; i < particleCount; i++) {
       particles.push({
         angle: (i / particleCount) * Math.PI * 2,
-        relativeRadius: 1.0 + (Math.random() * 0.08 - 0.04), // slight variance for depth
+        relativeRadius: 1.0 + (Math.random() * 0.08 - 0.04),
         speed: (Math.random() * 0.002 + 0.001) * (Math.random() < 0.5 ? 1 : -1),
         size: Math.random() * 1.6 + 1.0
       })
     }
 
-    // High density background floating dust particles
     const dustCount = 70
     const dustParticles = []
     for (let i = 0; i < dustCount; i++) {
@@ -518,11 +682,7 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
       const height = canvas.height
       const rawVolume = volumeRef.current
       
-      // Calculate responsive volume factor using user intensity settings
-      // Dampen volume response if standby to keep blob calm
       const volume = isAwakeRef.current ? (rawVolume * intensityRef.current) : (rawVolume * intensityRef.current * 0.12)
-      
-      // Add slow breathing oscillation when in standby
       const baseOscillation = isAwakeRef.current ? 0 : Math.sin(time * 0.02) * 6
       const currentSize = sizeRef.current + baseOscillation
       
@@ -534,7 +694,7 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
       const centerY = height / 2
       const theme = getColorTheme(colorRef.current)
 
-      // 1. Draw background floating dust particles with connection lines (constellation effect)
+      // 1. Constellation background
       ctx.fillStyle = `rgba(129, 140, 248, ${0.14 + (volume / 200)})`
       dustParticles.forEach(d => {
         d.x += d.vx * (1 + volume * 0.02)
@@ -550,7 +710,6 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
         ctx.fill()
       })
 
-      // Draw faint constellation lines between close dust particles
       for (let i = 0; i < dustParticles.length; i++) {
         for (let j = i + 1; j < dustParticles.length; j++) {
           const dx = dustParticles[i].x - dustParticles[j].x
@@ -567,11 +726,10 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
         }
       }
 
-      // 2. Draw dual-layered neural grid meshes (horizontal and vertical)
+      // 2. Grids
       ctx.strokeStyle = theme.mesh
       ctx.lineWidth = 0.4
       
-      // Vertical grid lines
       for (let offset = -60; offset <= 60; offset += 20) {
         ctx.beginPath()
         ctx.moveTo(centerX + offset, 0)
@@ -583,7 +741,6 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
         ctx.stroke()
       }
       
-      // Horizontal grid lines
       for (let offset = -60; offset <= 60; offset += 20) {
         ctx.beginPath()
         ctx.moveTo(0, centerY + offset)
@@ -595,7 +752,7 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
         ctx.stroke()
       }
 
-      // 3. Draw central glowing core with multiple gradients for deep realism
+      // 3. Central Gradient Glow
       const coreRadius = (currentSize * 0.2) + volume * 0.35
       const gradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, coreRadius * 2.5)
       gradient.addColorStop(0, '#ffffff')
@@ -608,7 +765,7 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
       ctx.arc(centerX, centerY, coreRadius * 2.5, 0, Math.PI * 2)
       ctx.fill()
 
-      // 4. Position & draw winding bezier radial fibers (creating the organic hair look)
+      // 4. Organic Bezier Fibers
       const positions = []
       particles.forEach(p => {
         const currentSpeed = p.speed * (1 + volume * 0.06)
@@ -621,7 +778,6 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
         const y = centerY + Math.sin(p.angle) * currentRadius
         positions.push({ x, y, size: p.size, angle: p.angle })
 
-        // Draw winding bezier radial fiber
         ctx.strokeStyle = theme.radial
         ctx.lineWidth = 0.2
         ctx.beginPath()
@@ -634,7 +790,7 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
         ctx.stroke()
       })
 
-      // 5. Draw node synapse particles (high density glowing dots)
+      // 5. Synaptic Glowing Nodes
       positions.forEach(pos => {
         ctx.fillStyle = theme.node
         ctx.shadowBlur = 5 + (volume * 0.12)
@@ -643,9 +799,9 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
         ctx.arc(pos.x, pos.y, pos.size + (volume * 0.008), 0, Math.PI * 2)
         ctx.fill()
       })
-      ctx.shadowBlur = 0 // Reset
+      ctx.shadowBlur = 0
 
-      // 6. Draw connection neural web lines between neighboring nodes
+      // 6. Neural Connections
       for (let i = 0; i < positions.length; i++) {
         for (let j = i + 1; j < positions.length; j++) {
           const dx = positions[i].x - positions[j].x
@@ -664,31 +820,29 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
         }
       }
 
-      // 7. Draw double counter-orbiting dashed dashed guide rings
+      // 7. Rotating Guide Rings
       ctx.strokeStyle = theme.ring
       ctx.lineWidth = 0.8
       ctx.setLineDash([5, 8])
       ctx.beginPath()
-      // Clockwise rotating dashed ring
       ctx.arc(centerX, centerY, currentSize - 15 + volume * 0.3, time * 0.005, time * 0.005 + Math.PI * 2)
       ctx.stroke()
       
       ctx.strokeStyle = `rgba(139, 92, 246, 0.22)`
       ctx.setLineDash([3, 10])
       ctx.beginPath()
-      // Counter-clockwise rotating dashed ring
       ctx.arc(centerX, centerY, currentSize + 28 + volume * 0.15, -time * 0.003, -time * 0.003 + Math.PI * 2)
       ctx.stroke()
       ctx.setLineDash([])
 
-      // 8. Draw very bright central synapse dot
+      // 8. Central Node
       ctx.fillStyle = '#ffffff'
       ctx.shadowBlur = 10
       ctx.shadowColor = '#ffffff'
       ctx.beginPath()
       ctx.arc(centerX, centerY, 4.5 + volume * 0.05, 0, Math.PI * 2)
       ctx.fill()
-      ctx.shadowBlur = 0 // Reset
+      ctx.shadowBlur = 0
 
       animationFrameIdRef.current = requestAnimationFrame(render)
     }
@@ -702,67 +856,83 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
     }
   }, [])
 
-  // Restart Speech Recognition if language changes while active
+  // AUTO HEALING WATCHDOG: Restarts recognition if it hangs/dies in background
+  useEffect(() => {
+    const watchdog = setInterval(() => {
+      if (activeRef.current && !isSpeakingRef.current && !recognitionRunningRef.current && recognitionRef.current) {
+        console.log("Watchdog: Speech recognition was offline. Restoring...")
+        if (addDiagnosticLog) addDiagnosticLog('WARN', 'Voice engine stalled. Performing auto-recovery restart...')
+        try {
+          recognitionRef.current.start()
+        } catch (e) {
+          console.error("Watchdog restart failed:", e)
+        }
+      }
+    }, 2500)
+    
+    return () => clearInterval(watchdog)
+  }, [])
+
+  // Restart Speech Recognition if device/language changes while active
   useEffect(() => {
     if (active && recognitionRef.current) {
-      console.log("Language changed to", lang, "- Restarting recognition...")
+      console.log("Settings changed (Device / Language). Rebuilding recognition...")
+      if (addDiagnosticLog) addDiagnosticLog('INFO', `Speech settings changed. Rebuilding recognition engine...`)
       
-      const oldRecognition = recognitionRef.current
+      const oldRec = recognitionRef.current
       recognitionRef.current = null
-      
-      oldRecognition.onend = null
+      oldRec.onend = null
       try {
-        oldRecognition.stop()
-      } catch (e) {
-        console.error("Error stopping old recognition:", e)
-      }
+        oldRec.stop()
+      } catch (e) {}
 
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
       if (SpeechRecognition) {
         try {
           const recognition = new SpeechRecognition()
           recognition.continuous = true
+          recognition.lang = lang === 'en-IN' ? 'hi-IN' : lang
           recognition.interimResults = false
-          recognition.lang = lang
           
           recognition.onstart = () => {
             setListening(true)
+            recognitionRunningRef.current = true
+            if (addDiagnosticLog) addDiagnosticLog('SECURE', `Speech recognition rebuilt [${recognition.lang}]`)
           }
           
           recognition.onerror = (event) => {
-            console.error("Speech recognition error during language change:", event.error)
-            if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-              recognitionRef.current = null
-              setListening(false)
-            }
+            console.error("Rebuilt recognition error:", event.error)
+            recognitionRunningRef.current = false
           }
           
           recognition.onend = () => {
-            if (recognitionRef.current && !isSpeakingRef.current) {
-              try {
-                recognitionRef.current.start()
-              } catch (e) {
-                console.log("Recognition restart skipped:", e)
-              }
+            recognitionRunningRef.current = false
+            if (activeRef.current && !isSpeakingRef.current && recognitionRef.current) {
+              setTimeout(() => {
+                if (activeRef.current && !isSpeakingRef.current && !recognitionRunningRef.current) {
+                  try {
+                    recognitionRef.current.start()
+                  } catch (e) {}
+                }
+              }, 200)
             }
           }
           
           recognition.onresult = (event) => {
-            const transcript = event.results[event.results.length - 1][0].transcript.toLowerCase()
-            console.log("Voice Command:", transcript)
+            const transcript = event.results[event.results.length - 1][0].transcript
             handleIncomingSpeech(transcript)
           }
           
           recognition.start()
           recognitionRef.current = recognition
         } catch (err) {
-          console.error("Speech recognition restart failed:", err)
+          console.error("Speech recognition rebuild failed:", err)
         }
       }
     }
-  }, [lang, active])
+  }, [lang, active, audioDeviceId])
 
-  // Cleanup & Connection Listeners
+  // Connection & Offline Handlers
   useEffect(() => {
     const handleOnline = () => {
       const isHindi = langRef.current.startsWith('hi')
@@ -817,7 +987,7 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
           ref={canvasRef}
           style={{
             ...styles.canvas,
-            cursor: active ? "default" : "pointer",
+            cursor: "pointer",
             border: active ? "none" : "2px dashed rgba(0, 245, 255, 0.2)",
             borderRadius: "50%"
           }}
@@ -830,7 +1000,7 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
         )}
       </div>
 
-      <h1 style={styles.title}>JARVIS</h1>
+      <h1 style={{ ...styles.title, color: getColorTheme(color).core }}>JARVIS</h1>
 
       <p style={styles.status}>
         {!active 
@@ -867,8 +1037,8 @@ const JarvisBlob = forwardRef(({ color = 'cyan', intensity = 1.5, size = 105, la
           </div>
           {jarvisResponse && (
             <div style={styles.terminalLine}>
-              <span style={styles.terminalPromptJarvis}>&gt; JARVIS:</span>
-              <span style={styles.terminalTextGlow}> {jarvisResponse}</span>
+              <span style={{ ...styles.terminalPromptJarvis, color: getColorTheme(color).core }}>&gt; JARVIS:</span>
+              <span style={{ ...styles.terminalTextGlow, color: getColorTheme(color).core, textShadow: `0 0 8px ${getColorTheme(color).radial}` }}> {jarvisResponse}</span>
             </div>
           )}
         </div>
@@ -932,7 +1102,6 @@ const styles = {
   },
 
   title: {
-    color: "#00F5FF",
     marginTop: "20px",
     fontSize: "36px",
     letterSpacing: "8px",
@@ -983,7 +1152,6 @@ const styles = {
   },
 
   terminalPromptJarvis: {
-    color: "#00f5ff",
     fontWeight: "700",
     marginRight: "8px",
     flexShrink: 0
@@ -993,10 +1161,7 @@ const styles = {
     color: "rgba(255, 255, 255, 0.8)"
   },
 
-  terminalTextGlow: {
-    color: "#00f5ff",
-    textShadow: "0 0 8px rgba(0, 245, 255, 0.4)"
-  }
+  terminalTextGlow: {}
 }
 
 export default JarvisBlob
