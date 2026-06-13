@@ -415,6 +415,20 @@ function App() {
     }
   }, [selectedAudioDevice])
 
+  // Sync settings with backend when keys or connection state change
+  useEffect(() => {
+    if (wsRef.current && wsConnected && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        event: 'sync_settings',
+        data: {
+          groqKey,
+          geminiKey,
+          activeProvider
+        }
+      }))
+    }
+  }, [groqKey, geminiKey, activeProvider, wsConnected])
+
   // Picture in Picture Toggle
   const togglePip = async () => {
     if (isPipActive) {

@@ -32,6 +32,13 @@ app.post('/api/chat', async (req, res) => {
   const { messages, provider } = req.body
   const text = messages[messages.length - 1]?.content || ''
   
+  // Dynamically update runtime API keys and provider from client headers
+  const clientGroqKey = req.headers['x-groq-key']
+  const clientGeminiKey = req.headers['x-gemini-key']
+  if (clientGroqKey) process.env.GROQ_API_KEY = clientGroqKey
+  if (clientGeminiKey) process.env.GEMINI_API_KEY = clientGeminiKey
+  if (provider) process.env.ACTIVE_PROVIDER = provider
+
   // Publish text command to event bus to orchestrate normally
   eventBus.publish('text_command', { text });
 
@@ -110,6 +117,13 @@ wss.on('connection', (ws) => {
           break;
         case 'text_command':
           eventBus.publish('text_command', { text: data.text });
+          break;
+        case 'sync_settings':
+          console.log('[WEBSOCKET] Synchronizing API keys and settings from client.');
+          if (data.groqKey !== undefined) process.env.GROQ_API_KEY = data.groqKey;
+          if (data.geminiKey !== undefined) process.env.GEMINI_API_KEY = data.geminiKey;
+          if (data.activeProvider !== undefined) process.env.ACTIVE_PROVIDER = data.activeProvider;
+          eventBus.publish('diagnostic_log', { type: 'SECURE', msg: 'API credentials synchronized from client.' });
           break;
         case 'permission_response':
           // Publish response back to the matching pending channel in permissions.js

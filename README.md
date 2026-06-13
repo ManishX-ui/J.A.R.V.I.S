@@ -39,6 +39,11 @@ git clone https://github.com/ManishX-ui/J.A.R.V.I.S.git
 cd J.A.R.V.I.S
 ```
 
+### ⚡ Quick Start (Windows)
+To automatically launch the Frontend, Backend, and Voice Daemon concurrently, simply double-click the `start_jarvis.bat` script at the root directory of the project.
+
+Alternatively, follow the manual steps below:
+
 ### 2. Backend Setup
 1. Navigate to the `backend/` directory:
    ```bash

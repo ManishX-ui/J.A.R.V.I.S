@@ -63,7 +63,7 @@ def main():
     if ext == ".pdf":
       text = parse_pdf(args.file)
     elif ext in [".txt", ".md", ".json", ".csv"]:
-      text = text = parse_txt_or_md(args.file)
+      text = parse_txt_or_md(args.file)
     else:
       print(json.dumps({"error": f"Unsupported file extension: {ext}"}))
       return

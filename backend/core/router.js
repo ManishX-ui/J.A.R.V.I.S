@@ -82,7 +82,8 @@ class JarvisRouter {
 
     // Memory & Ingestion Actions
     if (raw.startsWith('remember that ') || raw.startsWith('remember ')) {
-      const content = raw.replace(/(remember that|remember)/, '').trim();
+      const prefix = raw.startsWith('remember that ') ? 'remember that ' : 'remember ';
+      const content = text.substring(prefix.length).trim();
       return { 
         intent: 'MEMORY_ACTION', 
         action: 'REMEMBER', 
@@ -92,7 +93,11 @@ class JarvisRouter {
       };
     }
     if (raw.startsWith('learn this pdf ') || raw.startsWith('learn document ') || raw.startsWith('learn ')) {
-      const filePath = raw.replace(/(learn this pdf|learn document|learn)/, '').trim();
+      let prefixLen = 0;
+      if (raw.startsWith('learn this pdf ')) prefixLen = 'learn this pdf '.length;
+      else if (raw.startsWith('learn document ')) prefixLen = 'learn document '.length;
+      else prefixLen = 'learn '.length;
+      const filePath = text.substring(prefixLen).trim();
       return { 
         intent: 'MEMORY_ACTION', 
         action: 'LEARN_DOCUMENT', 
@@ -102,7 +107,11 @@ class JarvisRouter {
       };
     }
     if (raw.startsWith('search my notes about ') || raw.startsWith('search notes for ') || raw.startsWith('search notes ')) {
-      const queryText = raw.replace(/(search my notes about|search notes for|search notes)/, '').trim();
+      let prefixLen = 0;
+      if (raw.startsWith('search my notes about ')) prefixLen = 'search my notes about '.length;
+      else if (raw.startsWith('search notes for ')) prefixLen = 'search notes for '.length;
+      else prefixLen = 'search notes '.length;
+      const queryText = text.substring(prefixLen).trim();
       return { 
         intent: 'MEMORY_ACTION', 
         action: 'SEARCH', 
@@ -123,7 +132,8 @@ class JarvisRouter {
     }
 
     if (raw.startsWith('delete memory id ') || raw.startsWith('delete memory ')) {
-      const docId = raw.replace(/(delete memory id|delete memory)/, '').trim();
+      const prefixLen = raw.startsWith('delete memory id ') ? 'delete memory id '.length : 'delete memory '.length;
+      const docId = text.substring(prefixLen).trim();
       return {
         intent: 'MEMORY_ACTION',
         action: 'DELETE',
